@@ -14,7 +14,7 @@ target's original checkout.
 
 ```sh
 # Homebrew (macOS/Linux)
-brew install rcwsr-dev/tap/treesync
+brew install rcwsr/tap/treesync
 
 # go install
 go install github.com/rcwsr-dev/treesync/cmd/treesync@latest

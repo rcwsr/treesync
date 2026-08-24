@@ -43,7 +43,7 @@ changelog:
 brews:
   - name: treesync
     repository:
-      owner: rcwsr-dev
+      owner: rcwsr
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/rcwsr-dev/treesync"
