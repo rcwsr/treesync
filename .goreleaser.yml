@@ -1,0 +1,55 @@
+version: 2
+
+project_name: treesync
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: treesync
+    main: ./cmd/treesync
+    binary: treesync
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: treesync
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^test:"
+      - "^chore:"
+
+brews:
+  - name: treesync
+    repository:
+      owner: rcwsr-dev
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/rcwsr-dev/treesync"
+    description: "Live-sync a git worktree's changes into another worktree on a detached HEAD"
+    license: "MIT"
+    install: |
+      bin.install "treesync"
+    test: |
+      system "#{bin}/treesync --version"
