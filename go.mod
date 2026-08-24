@@ -1,4 +1,4 @@
-module github.com/rcwsr-dev/treesync
+module github.com/rcwsr/treesync
 
 go 1.27.0
 

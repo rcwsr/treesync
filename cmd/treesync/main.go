@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/rcwsr-dev/treesync/internal/cli"
+	"github.com/rcwsr/treesync/internal/cli"
 )
 
 // version is set via -ldflags "-X main.version=..." by GoReleaser at build time.

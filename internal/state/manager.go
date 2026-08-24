@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rcwsr-dev/treesync/internal/git"
+	"github.com/rcwsr/treesync/internal/git"
 )
 
 // TargetState is what a target was checked out to before treesync detached it.

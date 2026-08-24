@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/rcwsr-dev/treesync/internal/git"
+	"github.com/rcwsr/treesync/internal/git"
 )
 
 // NewRootCmd builds the treesync root command with its watch/sync/stop/status

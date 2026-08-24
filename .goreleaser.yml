@@ -46,7 +46,7 @@ brews:
       owner: rcwsr
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: "https://github.com/rcwsr-dev/treesync"
+    homepage: "https://github.com/rcwsr/treesync"
     description: "Live-sync a git worktree's changes into another worktree on a detached HEAD"
     license: "MIT"
     install: |

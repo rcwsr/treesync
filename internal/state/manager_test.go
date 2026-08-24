@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcwsr-dev/treesync/internal/git"
+	"github.com/rcwsr/treesync/internal/git"
 )
 
 func runGit(t *testing.T, dir string, args ...string) {
