@@ -30,6 +30,19 @@ func runSync(ctx context.Context, args []string, force bool) error {
 		return err
 	}
 
+	commonDir, err := target.CommonDir(ctx)
+	if err != nil {
+		return err
+	}
+	mgr := state.New(commonDir)
+
+	sourceBranch, _ := source.CurrentBranch(ctx)
+	unlock, err := mgr.Lock(state.LockInfo{SourceDir: source.Dir, SourceBranch: sourceBranch})
+	if err != nil {
+		return fmt.Errorf("%s: %w", target.Dir, err)
+	}
+	defer unlock()
+
 	clean, err := target.IsClean(ctx)
 	if err != nil {
 		return err
@@ -38,11 +51,6 @@ func runSync(ctx context.Context, args []string, force bool) error {
 		return fmt.Errorf("target %s has uncommitted changes; commit/stash them or pass --force", target.Dir)
 	}
 
-	commonDir, err := target.CommonDir(ctx)
-	if err != nil {
-		return err
-	}
-	mgr := state.New(commonDir)
 	engine := syncengine.NewEngine(source, target, mgr.Dir)
 
 	res, err := engine.Sync(ctx)

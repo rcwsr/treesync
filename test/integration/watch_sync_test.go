@@ -254,6 +254,32 @@ func TestCrashRecovery(t *testing.T) {
 	}
 }
 
+func TestSyncRefusesWhileWatching(t *testing.T) {
+	t.Parallel()
+	repoRoot, sourceDir := setupRepo(t)
+
+	cmd := exec.Command(binPath, "watch", sourceDir, repoRoot, "--debounce-ms=50")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting watch: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	waitFor(t, 5*time.Second, "target detached", func() bool { return isDetached(repoRoot) })
+
+	syncCmd := exec.Command(binPath, "sync", sourceDir, repoRoot, "--force")
+	out, err := syncCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected `sync` to refuse a target already being watched, output:\n%s", out)
+	}
+	if !bytes.Contains(out, []byte(sourceDir)) || !bytes.Contains(out, []byte("agent-branch")) {
+		t.Fatalf("expected error to name the watching worktree/branch, got:\n%s", out)
+	}
+}
+
 func trimNL(s string) string {
 	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {
 		s = s[:len(s)-1]

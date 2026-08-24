@@ -105,10 +105,8 @@ func (w *Worktree) Checkout(ctx context.Context, ref string) error {
 	return err
 }
 
-// ForceCheckout switches this worktree to ref, discarding any uncommitted modifications
-// to tracked files. Unlike Checkout, this is safe to use even when ref resolves to the
-// same commit that is already checked out (in which case a plain checkout would leave
-// modified files untouched).
+// ForceCheckout switches this worktree to ref, discarding uncommitted modifications to
+// tracked files — unlike Checkout, this works even when ref is already checked out.
 func (w *Worktree) ForceCheckout(ctx context.Context, ref string) error {
 	_, err := run(ctx, w.Dir, "checkout", "--quiet", "--force", ref)
 	return err

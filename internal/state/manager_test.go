@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rcwsr-dev/treesync/internal/git"
@@ -119,4 +120,36 @@ func TestRecoverIfStaleRestoresAfterCrash(t *testing.T) {
 	if branch, err := w.CurrentBranch(ctx); err != nil || branch != "main" {
 		t.Fatalf("branch after crash recovery = %q, err = %v", branch, err)
 	}
+}
+
+func TestLockPreventsConcurrentHolders(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	w := setupWorktree(t)
+	commonDir, err := w.CommonDir(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := New(commonDir)
+
+	unlock, err := mgr.Lock(LockInfo{SourceDir: "/agent/worktree", SourceBranch: "agent-branch"})
+	if err != nil {
+		t.Fatalf("first Lock: %v", err)
+	}
+
+	_, err = mgr.Lock(LockInfo{SourceDir: "/other/worktree"})
+	if err == nil {
+		t.Fatal("expected second Lock to fail while the first is held")
+	}
+	if !strings.Contains(err.Error(), "/agent/worktree") || !strings.Contains(err.Error(), "agent-branch") {
+		t.Fatalf("expected error to name the holding worktree/branch, got: %v", err)
+	}
+
+	unlock()
+
+	unlock2, err := mgr.Lock(LockInfo{SourceDir: "/other/worktree"})
+	if err != nil {
+		t.Fatalf("Lock after release should succeed, got: %v", err)
+	}
+	unlock2()
 }

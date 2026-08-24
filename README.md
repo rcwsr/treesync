@@ -10,11 +10,25 @@ The target worktree is switched to a detached HEAD before syncing begins, so not
 ever committed to or mutated on its real branch; stopping the watch restores the
 target's original checkout.
 
+## Installation
+
+```sh
+# Homebrew (macOS/Linux)
+brew install rcwsr-dev/tap/treesync
+
+# go install
+go install github.com/rcwsr-dev/treesync/cmd/treesync@latest
+
+# from source
+git clone https://github.com/rcwsr-dev/treesync
+cd treesync && go build -o treesync ./cmd/treesync
+```
+
+Or download a prebuilt binary from the [releases page](https://github.com/rcwsr-dev/treesync/releases).
+
 ## Usage
 
 ```sh
-go build -o treesync ./cmd/treesync
-
 # from inside the agent's worktree, sync into the repo's main checkout:
 treesync watch
 
@@ -58,5 +72,3 @@ go test ./...
 
 `go test ./...` includes an integration suite (`test/integration`) that exercises real
 temporary git worktrees end to end, including crash recovery.
-
-treesync live-test line 1787583245

@@ -49,6 +49,13 @@ func runWatch(parent context.Context, args []string, debounceMs int, force bool,
 	}
 	mgr := state.New(commonDir)
 
+	sourceBranch, _ := source.CurrentBranch(parent)
+	unlock, err := mgr.Lock(state.LockInfo{SourceDir: source.Dir, SourceBranch: sourceBranch})
+	if err != nil {
+		return fmt.Errorf("%s: %w", target.Dir, err)
+	}
+	defer unlock()
+
 	if err := mgr.RecoverIfStale(parent, target, logger); err != nil {
 		return err
 	}

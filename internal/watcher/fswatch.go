@@ -43,13 +43,11 @@ func New(root string, debounce time.Duration, logger *slog.Logger) (*FileWatcher
 }
 
 // Events returns the channel that receives one signal per debounced burst of changes.
-// It does not report which files changed — callers are expected to re-sync from
-// scratch, which the sync engine already does incrementally via its manifest.
+// It doesn't report which files changed; callers just re-sync (cheaply, via manifest diff).
 func (w *FileWatcher) Events() <-chan struct{} { return w.changed }
 
 // Run consumes fsnotify events until ctx is cancelled, debouncing bursts of changes into
-// a single signal per settled burst and adding newly-created directories to the watch
-// set as they appear.
+// one signal per settled burst and watching newly-created directories as they appear.
 func (w *FileWatcher) Run(ctx context.Context) error {
 	defer w.fs.Close()
 

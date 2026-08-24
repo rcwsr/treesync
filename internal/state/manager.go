@@ -42,6 +42,57 @@ func New(gitCommonDir string) *Manager {
 func (m *Manager) statePath() string    { return filepath.Join(m.Dir, "state.json") }
 func (m *Manager) pidPath() string      { return filepath.Join(m.Dir, "watch.pid") }
 func (m *Manager) manifestPath() string { return filepath.Join(m.Dir, "manifest.json") }
+func (m *Manager) lockPath() string     { return filepath.Join(m.Dir, "lock") }
+
+// LockInfo identifies the source worktree currently holding a target's lock, so a failed
+// Lock attempt can report who's syncing.
+type LockInfo struct {
+	SourceDir    string `json:"source_dir"`
+	SourceBranch string `json:"source_branch,omitempty"` // empty if source is detached
+}
+
+// Lock acquires an exclusive, non-blocking lock on target for the given source, so only
+// one treesync process (watch or sync) can touch it at a time. The kernel releases it
+// automatically if the holding process dies, so a crash never leaves the target locked
+// out.
+func (m *Manager) Lock(info LockInfo) (unlock func(), err error) {
+	if err := os.MkdirAll(m.Dir, 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(m.lockPath(), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("target is already being synced by %s", m.describeLockHolder())
+	}
+	if data, err := json.Marshal(info); err == nil {
+		_ = f.Truncate(0)
+		_, _ = f.WriteAt(data, 0)
+	}
+	return func() {
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}, nil
+}
+
+// describeLockHolder best-effort reads whichever source worktree currently holds the
+// lock, for a friendlier error message when acquisition fails.
+func (m *Manager) describeLockHolder() string {
+	data, err := os.ReadFile(m.lockPath())
+	if err != nil {
+		return "another treesync process"
+	}
+	var info LockInfo
+	if err := json.Unmarshal(data, &info); err != nil || info.SourceDir == "" {
+		return "another treesync process"
+	}
+	if info.SourceBranch == "" {
+		return fmt.Sprintf("worktree %s (detached)", info.SourceDir)
+	}
+	return fmt.Sprintf("worktree %s (branch %s)", info.SourceDir, info.SourceBranch)
+}
 
 // Detach snapshots target's current branch/HEAD, records this process's PID, and
 // switches target onto a detached HEAD so sync never touches its real branch.
@@ -81,11 +132,8 @@ func (m *Manager) Restore(ctx context.Context, target *git.Worktree) error {
 	if ref == "" {
 		ref = st.OriginalHead
 	}
-	// Force-checkout: sync may have left tracked files modified relative to ref's tree
-	// (a plain checkout leaves modified files untouched when ref is the same commit that
-	// was already checked out), and clean removes any untracked files sync copied in —
-	// safe because target was required to be clean (no untracked non-ignored files)
-	// before it was ever detached.
+	// Force-checkout undoes sync's edits to tracked files (a plain checkout is a no-op
+	// when ref is already checked out); clean removes whatever sync added.
 	if err := target.ForceCheckout(ctx, ref); err != nil {
 		return fmt.Errorf("restoring target to %s: %w (state left at %s for manual recovery)", ref, err, m.statePath())
 	}
@@ -101,10 +149,8 @@ func (m *Manager) Restore(ctx context.Context, target *git.Worktree) error {
 	}
 	_ = os.Remove(m.statePath())
 	_ = os.Remove(m.pidPath())
-	// The manifest records what was last mirrored into target; once target is restored
-	// to its original checkout, those records no longer describe what's on disk, so a
-	// future sync must start from a clean slate rather than skip files it thinks already
-	// match.
+	// The manifest is now stale (it describes what sync wrote before the restore), so
+	// drop it to force a full re-sync next time.
 	_ = os.Remove(m.manifestPath())
 	return nil
 }
@@ -130,17 +176,17 @@ func (m *Manager) IsRunning() (bool, int) {
 }
 
 // RecoverIfStale restores target from a previous session that left it detached without
-// exiting cleanly (e.g. kill -9 or a crash). It errors if that session's process is
-// still alive, since two watchers must never detach the same target concurrently.
+// exiting cleanly (e.g. kill -9 or a crash). Callers must hold Lock before calling this,
+// which is what guarantees any leftover state belongs to a dead session, not a live one.
 func (m *Manager) RecoverIfStale(ctx context.Context, target *git.Worktree, logger *slog.Logger) error {
-	if _, err := os.Stat(m.statePath()); errors.Is(err, os.ErrNotExist) {
+	st, err := m.loadState()
+	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	if running, pid := m.IsRunning(); running {
-		return fmt.Errorf("treesync is already watching %s (pid %d)", target.Dir, pid)
-	} else if pid != 0 {
-		logger.Warn("recovering target from a previous treesync session that did not exit cleanly", "target", target.Dir, "pid", pid)
+	if err != nil {
+		return err
 	}
+	logger.Warn("recovering target from a previous treesync session that did not exit cleanly", "target", target.Dir, "pid", st.PID)
 	return m.Restore(ctx, target)
 }
 
