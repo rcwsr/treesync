@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/rcwsr-dev/treesync/internal/state"
+	"github.com/rcwsr/treesync/internal/state"
 )
 
 func newStopCmd() *cobra.Command {

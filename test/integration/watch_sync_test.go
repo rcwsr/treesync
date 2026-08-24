@@ -24,7 +24,7 @@ func TestMain(m *testing.M) {
 	defer os.RemoveAll(dir)
 
 	binPath = filepath.Join(dir, "treesync")
-	build := exec.Command("go", "build", "-o", binPath, "github.com/rcwsr-dev/treesync/cmd/treesync")
+	build := exec.Command("go", "build", "-o", binPath, "github.com/rcwsr/treesync/cmd/treesync")
 	if out, err := build.CombinedOutput(); err != nil {
 		panic("building treesync: " + err.Error() + "\n" + string(out))
 	}

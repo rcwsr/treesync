@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/rcwsr-dev/treesync/internal/git"
+	"github.com/rcwsr/treesync/internal/git"
 )
 
 // Engine orchestrates one sync pass from source into target, persisting a manifest

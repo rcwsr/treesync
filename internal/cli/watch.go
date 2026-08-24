@@ -11,10 +11,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/rcwsr-dev/treesync/internal/logging"
-	"github.com/rcwsr-dev/treesync/internal/state"
-	"github.com/rcwsr-dev/treesync/internal/syncengine"
-	"github.com/rcwsr-dev/treesync/internal/watcher"
+	"github.com/rcwsr/treesync/internal/logging"
+	"github.com/rcwsr/treesync/internal/state"
+	"github.com/rcwsr/treesync/internal/syncengine"
+	"github.com/rcwsr/treesync/internal/watcher"
 )
 
 func newWatchCmd() *cobra.Command {

@@ -17,14 +17,14 @@ target's original checkout.
 brew install rcwsr/tap/treesync
 
 # go install
-go install github.com/rcwsr-dev/treesync/cmd/treesync@latest
+go install github.com/rcwsr/treesync/cmd/treesync@latest
 
 # from source
-git clone https://github.com/rcwsr-dev/treesync
+git clone https://github.com/rcwsr/treesync
 cd treesync && go build -o treesync ./cmd/treesync
 ```
 
-Or download a prebuilt binary from the [releases page](https://github.com/rcwsr-dev/treesync/releases).
+Or download a prebuilt binary from the [releases page](https://github.com/rcwsr/treesync/releases).
 
 ## Usage
 
