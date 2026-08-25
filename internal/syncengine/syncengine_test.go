@@ -88,23 +88,71 @@ func TestSyncCreateModifyDelete(t *testing.T) {
 	}
 }
 
-func TestSyncRejectsSymlinks(t *testing.T) {
+func TestSyncRecreatesSymlinks(t *testing.T) {
 	t.Parallel()
 	source := t.TempDir()
 	target := t.TempDir()
 	manifestPath := filepath.Join(t.TempDir(), "manifest.json")
 
 	writeFile(t, source, "real.txt", "content")
-	if err := os.Symlink(filepath.Join(source, "real.txt"), filepath.Join(source, "link.txt")); err != nil {
+	linkPath := filepath.Join(source, "link.txt")
+	if err := os.Symlink(filepath.Join(source, "real.txt"), linkPath); err != nil {
 		t.Fatal(err)
 	}
 
-	manifest, err := LoadManifest(manifestPath)
+	diff := syncOnce(t, source, target, manifestPath, []string{"real.txt", "link.txt"})
+	if len(diff.Ops) != 2 {
+		t.Fatalf("expected two ops, got %+v", diff.Ops)
+	}
+
+	targetLink := filepath.Join(target, "link.txt")
+	info, err := os.Lstat(targetLink)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ComputeDiff(source, []string{"real.txt", "link.txt"}, manifest); err == nil {
-		t.Fatal("expected ComputeDiff to reject a symlink, got nil error")
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected %s to be a symlink in the target", targetLink)
 	}
-	_ = target
+	gotTarget, err := os.Readlink(targetLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotTarget != filepath.Join(source, "real.txt") {
+		t.Fatalf("target link points at %q, want %q", gotTarget, filepath.Join(source, "real.txt"))
+	}
+
+	// unchanged symlink should produce no ops on the next cycle
+	diff = syncOnce(t, source, target, manifestPath, []string{"real.txt", "link.txt"})
+	if len(diff.Ops) != 0 {
+		t.Fatalf("expected no ops for unchanged symlink, got %+v", diff.Ops)
+	}
+
+	// retarget the symlink
+	if err := os.Remove(linkPath); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, source, "other.txt", "other")
+	if err := os.Symlink(filepath.Join(source, "other.txt"), linkPath); err != nil {
+		t.Fatal(err)
+	}
+	diff = syncOnce(t, source, target, manifestPath, []string{"real.txt", "other.txt", "link.txt"})
+	found := false
+	for _, op := range diff.Ops {
+		if op.Path == "link.txt" {
+			found = true
+			if op.Op != OpSymlink {
+				t.Fatalf("expected retargeted link.txt to produce an OpSymlink op, got %+v", op)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected an op for retargeted link.txt")
+	}
+	gotTarget, err = os.Readlink(targetLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotTarget != filepath.Join(source, "other.txt") {
+		t.Fatalf("target link points at %q, want %q", gotTarget, filepath.Join(source, "other.txt"))
+	}
 }

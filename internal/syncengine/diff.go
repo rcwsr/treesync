@@ -1,7 +1,6 @@
 package syncengine
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -12,6 +11,8 @@ type Op string
 const (
 	// OpCopy copies/overwrites a file in the target from the source.
 	OpCopy Op = "copy"
+	// OpSymlink recreates a symlink in the target pointing at the same target as the source's.
+	OpSymlink Op = "symlink"
 	// OpDelete removes a file from the target that is no longer present in the source.
 	OpDelete Op = "delete"
 )
@@ -41,14 +42,15 @@ func ComputeDiff(sourceDir string, present []string, manifest *Manifest) (*Diff,
 		if err != nil {
 			continue // vanished between enumeration and stat; the next cycle will see the deletion
 		}
+		op := OpCopy
 		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("treesync does not support symlinks yet: %s", rel)
+			op = OpSymlink
 		}
 		if prev, ok := manifest.Files[rel]; ok &&
 			prev.Size == info.Size() && prev.Mode == info.Mode() && prev.ModTime.Equal(info.ModTime()) {
 			continue
 		}
-		diff.Ops = append(diff.Ops, FileOp{Op: OpCopy, Path: rel, Mode: info.Mode()})
+		diff.Ops = append(diff.Ops, FileOp{Op: op, Path: rel, Mode: info.Mode()})
 	}
 	for rel := range manifest.Files {
 		if _, ok := seen[rel]; !ok {
