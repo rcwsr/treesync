@@ -34,6 +34,27 @@ func ApplyDiff(sourceDir, targetDir string, diff *Diff, manifest *Manifest) erro
 				return fmt.Errorf("hash %s: %w", op.Path, err)
 			}
 			manifest.Files[op.Path] = FileEntry{Hash: hash, Mode: info.Mode(), ModTime: info.ModTime(), Size: info.Size()}
+		case OpSymlink:
+			src := filepath.Join(sourceDir, op.Path)
+			target, err := os.Readlink(src)
+			if err != nil {
+				return fmt.Errorf("readlink %s: %w", op.Path, err)
+			}
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return fmt.Errorf("mkdir for symlink %s: %w", op.Path, err)
+			}
+			if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove existing %s before symlink: %w", op.Path, err)
+			}
+			if err := os.Symlink(target, dst); err != nil {
+				return fmt.Errorf("symlink %s: %w", op.Path, err)
+			}
+			info, err := os.Lstat(src)
+			if err != nil {
+				return fmt.Errorf("stat %s after symlink: %w", op.Path, err)
+			}
+			hash := sha256.Sum256([]byte(target))
+			manifest.Files[op.Path] = FileEntry{Hash: hex.EncodeToString(hash[:]), Mode: info.Mode(), ModTime: info.ModTime(), Size: info.Size()}
 		}
 	}
 	return nil
