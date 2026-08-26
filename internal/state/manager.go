@@ -25,6 +25,11 @@ type TargetState struct {
 	OriginalHead   string    `json:"original_head"`
 	PID            int       `json:"pid"`
 	StartedAt      time.Time `json:"started_at"`
+	// AutoStashRef is the commit SHA of the stash holding the target's pre-watch
+	// uncommitted changes, when --force auto-stashed them. A SHA rather than
+	// stash@{N} because the index shifts as other stashes are pushed or popped.
+	// Empty when the target was already clean and nothing was stashed.
+	AutoStashRef string `json:"auto_stash_ref,omitempty"`
 }
 
 // Manager owns the state/pid/manifest files for one target, kept under the target's
@@ -37,6 +42,17 @@ type Manager struct {
 // target's shared .git directory, the same for every worktree of the repo.
 func New(gitCommonDir string) *Manager {
 	return &Manager{Dir: filepath.Join(gitCommonDir, "treesync")}
+}
+
+// InvalidateManifest drops the persisted manifest so the next sync re-copies every file.
+// Call this after anything that rewrites the target's working tree outside of sync
+// (auto-stash, checkout --detach), which leaves the manifest describing content the
+// target no longer has; a diff against that stale manifest would be an empty no-op.
+func (m *Manager) InvalidateManifest() error {
+	if err := os.Remove(m.manifestPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing manifest at %s: %w", m.manifestPath(), err)
+	}
+	return nil
 }
 
 func (m *Manager) statePath() string    { return filepath.Join(m.Dir, "state.json") }
@@ -96,7 +112,9 @@ func (m *Manager) describeLockHolder() string {
 
 // Detach snapshots target's current branch/HEAD, records this process's PID, and
 // switches target onto a detached HEAD so sync never touches its real branch.
-func (m *Manager) Detach(ctx context.Context, target *git.Worktree) (*TargetState, error) {
+// autoStashRef is the SHA of the stash made before detaching ("" if none); it is
+// persisted so Restore can pop exactly that stash later.
+func (m *Manager) Detach(ctx context.Context, target *git.Worktree, autoStashRef string) (*TargetState, error) {
 	if err := os.MkdirAll(m.Dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -108,7 +126,7 @@ func (m *Manager) Detach(ctx context.Context, target *git.Worktree) (*TargetStat
 	if err != nil {
 		return nil, err
 	}
-	st := &TargetState{OriginalBranch: branch, OriginalHead: head, PID: os.Getpid(), StartedAt: time.Now()}
+	st := &TargetState{OriginalBranch: branch, OriginalHead: head, PID: os.Getpid(), StartedAt: time.Now(), AutoStashRef: autoStashRef}
 	if err := m.saveState(st); err != nil {
 		return nil, err
 	}
@@ -122,8 +140,9 @@ func (m *Manager) Detach(ctx context.Context, target *git.Worktree) (*TargetStat
 }
 
 // Restore checks target back out onto its original branch (or commit, if it was already
-// detached) and removes the state/pid files once the target is verified clean.
-func (m *Manager) Restore(ctx context.Context, target *git.Worktree) error {
+// detached), pops the auto-stash that holds the user's pre-watch changes, and removes
+// the state/pid files once the target is verified clean.
+func (m *Manager) Restore(ctx context.Context, target *git.Worktree, logger *slog.Logger) error {
 	st, err := m.loadState()
 	if err != nil {
 		return err
@@ -147,11 +166,43 @@ func (m *Manager) Restore(ctx context.Context, target *git.Worktree) error {
 	if !clean {
 		return fmt.Errorf("target %s not clean after restore; state left at %s for manual recovery", target.Dir, m.statePath())
 	}
+	// The clean assertion above runs *before* the pop: a successful pop legitimately
+	// re-dirties the tree with the user's pre-watch changes.
+	if st.AutoStashRef != "" {
+		if err := m.restoreAutoStash(ctx, target, st.AutoStashRef, logger); err != nil {
+			return err
+		}
+	}
 	_ = os.Remove(m.statePath())
 	_ = os.Remove(m.pidPath())
 	// The manifest is now stale (it describes what sync wrote before the restore), so
 	// drop it to force a full re-sync next time.
 	_ = os.Remove(m.manifestPath())
+	return nil
+}
+
+// restoreAutoStash pops the auto-stash recorded in state, locating it by commit SHA
+// against the current stash list (stash@{N} would be the wrong handle, since the index
+// shifts as other stashes are pushed or popped). If the user already popped it manually,
+// log a warning and continue. On a pop conflict, fail loudly and leave the state file
+// in place for manual recovery, matching Restore's other error paths.
+func (m *Manager) restoreAutoStash(ctx context.Context, target *git.Worktree, sha string, logger *slog.Logger) error {
+	out, err := target.Run(ctx, "stash", "list", "--format=%H")
+	if err != nil {
+		return fmt.Errorf("listing stashes to restore auto-stash %s: %w (state left at %s for manual recovery)", sha, err, m.statePath())
+	}
+	for i, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) != sha {
+			continue
+		}
+		ref := fmt.Sprintf("stash@{%d}", i)
+		if _, err := target.Run(ctx, "stash", "pop", ref); err != nil {
+			return fmt.Errorf("auto-stash %s (%s) could not be popped, likely a merge conflict: resolve it in %s, then `git stash drop %s` when done; state left at %s for manual recovery", sha, ref, target.Dir, ref, m.statePath())
+		}
+		logger.Info("restored target's auto-stashed uncommitted changes", "stash", sha)
+		return nil
+	}
+	logger.Warn("auto-stash is no longer in the stash list (popped manually?); continuing without it", "stash", sha)
 	return nil
 }
 
@@ -187,7 +238,7 @@ func (m *Manager) RecoverIfStale(ctx context.Context, target *git.Worktree, logg
 		return err
 	}
 	logger.Warn("recovering target from a previous treesync session that did not exit cleanly", "target", target.Dir, "pid", st.PID)
-	return m.Restore(ctx, target)
+	return m.Restore(ctx, target, logger)
 }
 
 // LoadStateForStatus exposes the persisted TargetState for `treesync status`.

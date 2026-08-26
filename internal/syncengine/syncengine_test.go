@@ -156,3 +156,42 @@ func TestSyncRecreatesSymlinks(t *testing.T) {
 		t.Fatalf("target link points at %q, want %q", gotTarget, filepath.Join(source, "other.txt"))
 	}
 }
+
+func TestCountOps(t *testing.T) {
+	t.Parallel()
+
+	// A symlink op brings a file into the target just like a copy, so it must count
+	// as created (never as a deletion, which the old created/else-deleted branch did).
+	created, modified, deleted := countOps(&Diff{Ops: []FileOp{{Op: OpSymlink, Path: "link.txt"}}}, &Manifest{Files: map[string]FileEntry{}})
+	if created != 1 || modified != 0 || deleted != 0 {
+		t.Fatalf("new symlink counted as created=%d modified=%d deleted=%d, want 1/0/0", created, modified, deleted)
+	}
+
+	// Overwriting a path already recorded in the manifest is a modification, not a
+	// creation, for symlinks and regular files alike.
+	created, modified, deleted = countOps(
+		&Diff{Ops: []FileOp{{Op: OpSymlink, Path: "link.txt"}}},
+		&Manifest{Files: map[string]FileEntry{"link.txt": {}}},
+	)
+	if created != 0 || modified != 1 || deleted != 0 {
+		t.Fatalf("existing symlink counted as created=%d modified=%d deleted=%d, want 0/1/0", created, modified, deleted)
+	}
+	created, modified, deleted = countOps(
+		&Diff{Ops: []FileOp{{Op: OpCopy, Path: "a.txt"}}},
+		&Manifest{Files: map[string]FileEntry{"a.txt": {}}},
+	)
+	if created != 0 || modified != 1 || deleted != 0 {
+		t.Fatalf("existing regular file counted as created=%d modified=%d deleted=%d, want 0/1/0", created, modified, deleted)
+	}
+
+	// A mixed diff classifies each op independently.
+	created, modified, deleted = countOps(&Diff{Ops: []FileOp{
+		{Op: OpCopy, Path: "new.txt"},
+		{Op: OpCopy, Path: "existing.txt"},
+		{Op: OpSymlink, Path: "link.txt"},
+		{Op: OpDelete, Path: "gone.txt"},
+	}}, &Manifest{Files: map[string]FileEntry{"existing.txt": {}, "link.txt": {}, "gone.txt": {}}})
+	if created != 1 || modified != 2 || deleted != 1 {
+		t.Fatalf("mixed diff counted as created=%d modified=%d deleted=%d, want 1/2/1", created, modified, deleted)
+	}
+}

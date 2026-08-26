@@ -47,8 +47,16 @@ func runSync(ctx context.Context, args []string, force bool) error {
 	if err != nil {
 		return err
 	}
-	if !clean && !force {
-		return fmt.Errorf("target %s has uncommitted changes; commit/stash them or pass --force", target.Dir)
+	if !clean {
+		if !force {
+			return fmt.Errorf("target %s has uncommitted changes; commit/stash them or pass --force", target.Dir)
+		}
+		// A force sync into a dirty target runs against a tree whose baseline is
+		// unknown, so the manifest can't be trusted: drop it so this is a full sync
+		// rather than an incremental diff against a baseline the target no longer matches.
+		if err := mgr.InvalidateManifest(); err != nil {
+			return fmt.Errorf("invalidating manifest for %s: %w", target.Dir, err)
+		}
 	}
 
 	engine := syncengine.NewEngine(source, target, mgr.Dir)
@@ -57,6 +65,6 @@ func runSync(ctx context.Context, args []string, force bool) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("synced: %d created/updated, %d deleted (%s)\n", res.Created, res.Deleted, res.Duration)
+	fmt.Printf("synced: %d created, %d modified, %d deleted (%s)\n", res.Created, res.Modified, res.Deleted, res.Duration)
 	return nil
 }
