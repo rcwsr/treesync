@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -285,4 +286,166 @@ func trimNL(s string) string {
 		s = s[:len(s)-1]
 	}
 	return s
+}
+
+// TestWatchForceResyncsAfterAutoStash is the primary regression guard: a one-shot sync
+// followed by `watch --force` must actually re-sync the target's content. Before the
+// fix, the auto-stash + detach wiped the synced content while the persisted manifest
+// still matched the unchanged source, so the initial sync was an empty no-op and the
+// target was left on pristine HEAD content.
+func TestWatchForceResyncsAfterAutoStash(t *testing.T) {
+	t.Parallel()
+	repoRoot, sourceDir := setupRepo(t)
+	statePath := filepath.Join(repoRoot, ".git", "treesync", "state.json")
+
+	// Diverge source from the target's committed content so the one-shot sync below
+	// leaves the target dirty (uncommitted) when `watch` starts.
+	agentContent := "hello\nfrom agent\n"
+	if err := os.WriteFile(filepath.Join(sourceDir, "README.md"), []byte(agentContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// One-shot sync: copies source content into the target and persists the manifest.
+	if out, err := exec.Command(binPath, "sync", sourceDir, repoRoot).CombinedOutput(); err != nil {
+		t.Fatalf("one-shot sync: %v\n%s", err, out)
+	}
+	if got, err := os.ReadFile(filepath.Join(repoRoot, "README.md")); err != nil || string(got) != agentContent {
+		t.Fatalf("target README after one-shot sync = %q (err %v), want %q", got, err, agentContent)
+	}
+
+	// `watch --force` auto-stashes the sync's changes and detaches, wiping the synced
+	// content. The stale manifest must be invalidated or the initial sync will diff
+	// the unchanged source against it, no-op, and leave pristine HEAD content behind.
+	var out safeBuffer
+	cmd := exec.Command(binPath, "watch", sourceDir, repoRoot, "--force", "--debounce-ms=50")
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting watch: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+
+	waitFor(t, 5*time.Second, "initial sync complete", func() bool {
+		return bytes.Contains([]byte(out.String()), []byte("initial sync complete"))
+	})
+
+	// The regression itself: the target's file content, not the counters, must match
+	// the source.
+	if got, err := os.ReadFile(filepath.Join(repoRoot, "README.md")); err != nil || string(got) != agentContent {
+		t.Fatalf("target README after watch --force = %q (err %v), want %q (stale manifest no-op?)", got, err, agentContent)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatalf("sending SIGINT: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("watch process exited with error: %v\noutput:\n%s", err, out.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("watch process did not exit after SIGINT\noutput:\n%s", out.String())
+	}
+
+	// The stop path pops the auto-stash, so the stashed sync content comes back and no
+	// treesync stash entry is left behind.
+	if got, err := os.ReadFile(filepath.Join(repoRoot, "README.md")); err != nil || string(got) != agentContent {
+		t.Fatalf("target README after stop = %q (err %v), want %q (auto-stash not restored?)", got, err, agentContent)
+	}
+	if stashList := runGit(t, repoRoot, "stash", "list"); strings.Contains(stashList, "treesync: auto-stash") {
+		t.Fatalf("auto-stash still in stash list after stop:\n%s", stashList)
+	}
+	if !fileMissing(statePath) {
+		t.Fatal("expected state file removed after restore")
+	}
+}
+
+// TestStopRestoresAutoStash verifies that `stop` pops the auto-stash created by
+// `watch --force` on a dirty target, restoring the user's uncommitted changes by their
+// recorded SHA — robust to the stash index shifting, which a stash@{0} handle would not
+// be — without touching the user's own stashes.
+func TestStopRestoresAutoStash(t *testing.T) {
+	t.Parallel()
+	repoRoot, sourceDir := setupRepo(t)
+
+	// Pre-seed an unrelated stash so the auto-stash is pushed on top of it.
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("unrelated work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoRoot, "stash", "push", "--message", "unrelated work")
+
+	// Now dirty the target with the user's WIP: a tracked modification plus an
+	// untracked file (the auto-stash is pushed with --include-untracked).
+	wipContent := "user's wip\n"
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte(wipContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "wip.txt"), []byte("untracked wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out safeBuffer
+	cmd := exec.Command(binPath, "watch", sourceDir, repoRoot, "--force", "--debounce-ms=50")
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting watch: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+
+	waitFor(t, 5*time.Second, "initial sync complete", func() bool {
+		return bytes.Contains([]byte(out.String()), []byte("initial sync complete"))
+	})
+
+	// Push another stash while the watch runs, the way the user's own stash activity
+	// would, shifting the auto-stash off stash@{0}.
+	if err := os.WriteFile(filepath.Join(repoRoot, "stray.txt"), []byte("stray\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoRoot, "stash", "push", "--include-untracked", "--message", "shift")
+
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatalf("sending SIGINT: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("watch process exited with error: %v\noutput:\n%s", err, out.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("watch process did not exit after SIGINT\noutput:\n%s", out.String())
+	}
+
+	if branch := trimNL(runGit(t, repoRoot, "symbolic-ref", "--short", "HEAD")); branch != "main" {
+		t.Fatalf("target branch after stop = %q, want %q", branch, "main")
+	}
+	// The user's uncommitted changes must be back on disk.
+	if got, err := os.ReadFile(filepath.Join(repoRoot, "README.md")); err != nil || string(got) != wipContent {
+		t.Fatalf("target README after stop = %q (err %v), want %q (auto-stash not restored?)", got, err, wipContent)
+	}
+	if got, err := os.ReadFile(filepath.Join(repoRoot, "wip.txt")); err != nil || string(got) != "untracked wip\n" {
+		t.Fatalf("target wip.txt after stop = %q (err %v), want the untracked WIP file back", got, err)
+	}
+	// The auto-stash is gone from the stash list; the user's own stashes are untouched.
+	stashList := runGit(t, repoRoot, "stash", "list")
+	if strings.Contains(stashList, "treesync: auto-stash") {
+		t.Fatalf("auto-stash still in stash list after stop:\n%s", stashList)
+	}
+	if !strings.Contains(stashList, "unrelated work") || !strings.Contains(stashList, "shift") {
+		t.Fatalf("expected the user's own stashes to be untouched, got:\n%s", stashList)
+	}
 }

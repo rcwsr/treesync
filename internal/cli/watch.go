@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -64,6 +65,7 @@ func runWatch(parent context.Context, args []string, debounceMs int, force bool,
 	if err != nil {
 		return err
 	}
+	autoStashRef := ""
 	if !clean {
 		if !force {
 			return fmt.Errorf("target %s has uncommitted changes; commit/stash them or pass --force", target.Dir)
@@ -71,13 +73,26 @@ func runWatch(parent context.Context, args []string, debounceMs int, force bool,
 		if _, err := target.Run(parent, "stash", "push", "--include-untracked", "--message", "treesync: auto-stash before watch"); err != nil {
 			return fmt.Errorf("auto-stashing target's changes: %w", err)
 		}
-		logger.Warn("stashed target's uncommitted changes before detaching", "target", target.Dir)
+		// Record the stash commit SHA (not stash@{0}, which shifts as other stashes
+		// are pushed or popped) so restore can later pop exactly this stash.
+		ref, err := target.Run(parent, "rev-parse", "refs/stash")
+		if err != nil {
+			return fmt.Errorf("resolving auto-stash commit: %w", err)
+		}
+		autoStashRef = strings.TrimSpace(ref)
+		logger.Warn("stashed target's uncommitted changes before detaching", "target", target.Dir, "stash", autoStashRef)
 	}
 
-	if _, err := mgr.Detach(parent, target); err != nil {
+	if _, err := mgr.Detach(parent, target, autoStashRef); err != nil {
 		return fmt.Errorf("detaching target: %w", err)
 	}
 	logger.Info("target detached", "target", target.Dir)
+
+	// The auto-stash and the detach both rewrote the target's working tree, so the
+	// persisted manifest no longer describes it; drop it to force a full re-sync.
+	if err := mgr.InvalidateManifest(); err != nil {
+		return fmt.Errorf("invalidating manifest: %w", err)
+	}
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -88,7 +103,7 @@ func runWatch(parent context.Context, args []string, debounceMs int, force bool,
 			return
 		}
 		restored = true
-		if err := mgr.Restore(context.Background(), target); err != nil {
+		if err := mgr.Restore(context.Background(), target, logger); err != nil {
 			logger.Error("failed to restore target", "err", err)
 			return
 		}
@@ -106,7 +121,7 @@ func runWatch(parent context.Context, args []string, debounceMs int, force bool,
 		}
 		return fmt.Errorf("initial sync: %w", err)
 	}
-	logger.Info("initial sync complete", "created", res.Created, "deleted", res.Deleted)
+	logger.Info("initial sync complete", "created", res.Created, "modified", res.Modified, "deleted", res.Deleted)
 
 	fw, err := watcher.New(source.Dir, time.Duration(debounceMs)*time.Millisecond, logger)
 	if err != nil {
@@ -137,8 +152,8 @@ func runWatch(parent context.Context, args []string, debounceMs int, force bool,
 				logger.Error("sync failed", "err", err)
 				continue
 			}
-			if res.Created > 0 || res.Deleted > 0 {
-				logger.Info("synced", "created", res.Created, "deleted", res.Deleted, "duration", res.Duration)
+			if res.Created > 0 || res.Modified > 0 || res.Deleted > 0 {
+				logger.Info("synced", "created", res.Created, "modified", res.Modified, "deleted", res.Deleted, "duration", res.Duration)
 			}
 		}
 	}

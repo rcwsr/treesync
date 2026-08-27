@@ -25,6 +25,7 @@ func NewEngine(source, target *git.Worktree, stateDir string) *Engine {
 // Result summarizes one Sync call.
 type Result struct {
 	Created  int
+	Modified int
 	Deleted  int
 	Duration time.Duration
 }
@@ -49,22 +50,36 @@ func (e *Engine) Sync(ctx context.Context) (*Result, error) {
 	if len(diff.Ops) == 0 {
 		return &Result{Duration: time.Since(start)}, nil
 	}
+	// Count before ApplyDiff runs: it rewrites the manifest in place, which would
+	// corrupt the created-vs-modified classification below.
+	created, modified, deleted := countOps(diff, manifest)
 	if err := ApplyDiff(e.Source.Dir, e.Target.Dir, diff, manifest); err != nil {
 		return nil, err
 	}
 	if err := manifest.Save(e.ManifestPath); err != nil {
 		return nil, err
 	}
+	return &Result{Created: created, Modified: modified, Deleted: deleted, Duration: time.Since(start)}, nil
+}
 
-	var created, deleted int
+// countOps tallies the diff into Result counters. Copy and symlink ops both bring a
+// source file into the target, so neither is a deletion; they split into created vs
+// modified by whether the path was already recorded in the manifest (which the caller
+// must evaluate before ApplyDiff mutates it).
+func countOps(diff *Diff, manifest *Manifest) (created, modified, deleted int) {
 	for _, op := range diff.Ops {
-		if op.Op == OpCopy {
-			created++
-		} else {
+		switch op.Op {
+		case OpDelete:
 			deleted++
+		case OpCopy, OpSymlink:
+			if _, ok := manifest.Files[op.Path]; ok {
+				modified++
+			} else {
+				created++
+			}
 		}
 	}
-	return &Result{Created: created, Deleted: deleted, Duration: time.Since(start)}, nil
+	return created, modified, deleted
 }
 
 // presentFiles returns source's tracked + untracked-but-not-ignored files that still

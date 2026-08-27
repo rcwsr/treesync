@@ -49,12 +49,13 @@ func TestDetachAndRestoreRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr := New(commonDir)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	if branch, err := w.CurrentBranch(ctx); err != nil || branch != "main" {
 		t.Fatalf("branch before detach = %q, err = %v", branch, err)
 	}
 
-	if _, err := mgr.Detach(ctx, w); err != nil {
+	if _, err := mgr.Detach(ctx, w, ""); err != nil {
 		t.Fatalf("Detach: %v", err)
 	}
 	if branch, err := w.CurrentBranch(ctx); err != nil || branch != "" {
@@ -67,7 +68,7 @@ func TestDetachAndRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("expected watch.pid to exist: %v", err)
 	}
 
-	if err := mgr.Restore(ctx, w); err != nil {
+	if err := mgr.Restore(ctx, w, logger); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	if branch, err := w.CurrentBranch(ctx); err != nil || branch != "main" {
@@ -105,7 +106,7 @@ func TestRecoverIfStaleRestoresAfterCrash(t *testing.T) {
 	mgr := New(commonDir)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	if _, err := mgr.Detach(ctx, w); err != nil {
+	if _, err := mgr.Detach(ctx, w, ""); err != nil {
 		t.Fatalf("Detach: %v", err)
 	}
 	// Simulate a crash: overwrite the pidfile with a PID that can't be alive, without
